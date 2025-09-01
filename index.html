@@ -1,1 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Second Brain — MVP</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 24px; max-width: 900px; }
+    .row { display:flex; gap:8px; margin:8px 0; }
+    textarea { width: 100%; }
+    .card { border:1px solid #ddd; border-radius:8px; padding:12px; margin:10px 0; }
+    button { cursor: pointer; }
+    .muted { color:#666; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>Second Brain — Text Notes (MVP)</h1>
+
+  <div id="auth">
+    <button id="btnSignIn">Sign in with Google</button>
+    <button id="btnSignOut" style="display:none;">Sign out</button>
+    <div id="whoami" class="muted"></div>
+  </div>
+
+  <hr/>
+
+  <h2>Add Note</h2>
+  <div class="card">
+    <div class="row">
+      <input id="title" placeholder="Title" style="flex:1;" />
+    </div>
+    <div class="row">
+      <textarea id="content" rows="5" placeholder="Write your note..."></textarea>
+    </div>
+    <div class="row">
+      <button id="btnAdd">Add Note</button>
+    </div>
+  </div>
+
+  <h2>Your Notes</h2>
+  <div id="notes"></div>
+
+  <hr/>
+
+  <h2>Ask your notes (AI)</h2>
+  <div class="card">
+    <div class="row">
+      <input id="question" placeholder="Ask anything from your notes..." style="flex:1;" />
+      <button id="btnAsk">Ask</button>
+    </div>
+    <div id="answer" style="white-space:pre-wrap;"></div>
+    <div id="sources"></div>
+  </div>
+
+  <!-- Firebase SDKs (v12 modules) -->
+  <script type="module">
+    import { initializeApp }    from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
+    import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
+    import { getFirestore, collection, addDoc, serverTimestamp, query, orderBy, onSnapshot, doc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+
+    // 1) Firebase config (YOUR values)
+    const firebaseConfig = {
+      apiKey: "AIzaSyAzlJfpX_wfDCkYNb4O69aNT1G-XYc1UsU",
+      authDomain: "second-brain-3854d.firebaseapp.com",
+      projectId: "second-brain-3854d",
+      storageBucket: "second-brain-3854d.firebasestorage.app",
+      messagingSenderId: "550138993744",
+      appId: "1:550138993744:web:8fd095f6588e288f44c555",
+      measurementId: "G-5FB17NLPXM"
+    };
+
+    // 2) Init
+    const app  = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+    const provider = new GoogleAuthProvider();
+
+    // UI refs
+    const btnSignIn = document.getElementById('btnSignIn');
+    const btnSignOut= document.getElementById('btnSignOut');
+    const whoami    = document.getElementById('whoami');
+    const titleEl   = document.getElementById('title');
+    const contentEl = document.getElementById('content');
+    const btnAdd    = document.getElementById('btnAdd');
+    const notesEl   = document.getElementById('notes');
+    const questionEl= document.getElementById('question');
+    const btnAsk    = document.getElementById('btnAsk');
+    const answerEl  = document.getElementById('answer');
+    const sourcesEl = document.getElementById('sources');
+
+    // Render.com API base (your hosted backend)
+    const API_BASE = "https://second-brain-3j3g.onrender.com";
+
+    // 3) Auth listeners
+    btnSignIn.onclick = () => signInWithPopup(auth, provider);
+    btnSignOut.onclick = () => signOut(auth);
+
+    let unsubNotes = null;
+
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        btnSignIn.style.display = 'none';
+        btnSignOut.style.display = 'inline-block';
+        whoami.textContent = `Signed in as ${user.displayName || user.email}`;
+
+        // start notes stream
+        const ref = collection(db, `users/${user.uid}/notes`);
+        const q = query(ref, orderBy('createdAt', 'desc'));
+        unsubNotes && unsubNotes();
+        unsubNotes = onSnapshot(q, (snap) => {
+          notesEl.innerHTML = "";
+          snap.forEach(d => renderNote(d.id, d.data()));
+        });
+      } else {
+        btnSignIn.style.display = 'inline-block';
+        btnSignOut.style.display = 'none';
+        whoami.textContent = "";
+        notesEl.innerHTML = "";
+        unsubNotes && unsubNotes(); unsubNotes = null;
+      }
+    });
+
+    // 4) Add note
+    btnAdd.onclick = async () => {
+      const user = auth.currentUser;
+      if (!user) return alert("Sign in first");
+      const title = titleEl.value.trim();
+      const content = contentEl.value.trim();
+      if (!title && !content) return;
+
+      await addDoc(collection(db, `users/${user.uid}/notes`), {
+        title, content, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+
+      titleEl.value = "";
+      contentEl.value = "";
+    };
+
+    // 5) Render note card with edit/delete
+    function renderNote(id, data) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const titleInp = document.createElement('input');
+      titleInp.value = data.title || "";
+      titleInp.style.width = "100%";
+
+      const contentTa = document.createElement('textarea');
+      contentTa.rows = 4; contentTa.value = data.content || "";
+
+      const row = document.createElement('div'); row.className = 'row';
+      const btnSave = document.createElement('button'); btnSave.textContent = "Save";
+      const btnDel  = document.createElement('button'); btnDel.textContent = "Delete";
+      row.appendChild(btnSave); row.appendChild(btnDel);
+
+      btnSave.onclick = async () => {
+        const user = auth.currentUser; if (!user) return;
+        await updateDoc(doc(db, `users/${user.uid}/notes/${id}`), {
+          title: titleInp.value, content: contentTa.value, updatedAt: serverTimestamp()
+        });
+      };
+      btnDel.onclick = async () => {
+        const user = auth.currentUser; if (!user) return;
+        if (!confirm("Delete this note?")) return;
+        await deleteDoc(doc(db, `users/${user.uid}/notes/${id}`));
+      };
+
+      card.appendChild(titleInp);
+      card.appendChild(contentTa);
+      card.appendChild(row);
+      notesEl.appendChild(card);
+    }
+
+    // 6) Ask AI (send top N latest notes to backend for now)
+    btnAsk.onclick = async () => {
+      const user = auth.currentUser; if (!user) return alert("Sign in first");
+      const question = questionEl.value.trim(); if (!question) return;
+
+      // Collect up to 6 most recent notes currently in DOM
+      const cards = Array.from(notesEl.querySelectorAll('.card')).slice(0, 6);
+      const notes = cards.map(c => {
+        const [ti, ta] = c.querySelectorAll('input,textarea');
+        return { title: ti.value || "", content: ta.value || "" };
+      });
+
+      answerEl.textContent = "Thinking…";
+      sourcesEl.innerHTML = "";
+
+      const res = await fetch(`${API_BASE}/api/ask`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ question, notes })
+      });
+      const data = await res.json();
+
+      if (!data.ok) { answerEl.textContent = "Error: " + (data.error || "unknown"); return; }
+
+      answerEl.textContent = data.answer || "";
+      if (data.sources?.length) {
+        sourcesEl.innerHTML = "<b>Sources</b><ul>" + data.sources.map((s,i)=>`<li>[${i+1}] ${s.title || "(no title)"}</li>`).join("") + "</ul>";
+      }
+    };
+  </script>
+</body>
+</html>
 
